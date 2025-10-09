@@ -4,6 +4,8 @@ library(argparse)
 library(SoupX)
 library(SingleCellExperiment)
 library(Matrix)
+library(tibble)
+
 
 
 parser <- ArgumentParser(description = "Run SoupX automated on a SingleCellExperiment")
@@ -23,42 +25,50 @@ run_SoupX <- function(sce_path, cluster_col, set_cont, cormat, perCell){
   # read input (SCE object)
   sce <- readRDS(sce_path)
 
-  # is there clustering, counts, is.cell
-  if (!"counts" %in% assayNames(sce)) stop("Assay 'counts' missing.")
-  if (!(cluster_col %in% colnames(colData(sce)))) stop("SoupX requires pre-computed clustering!.")
-  if (!"is.cell" %in% colnames(colData(sce))) stop("'is.cell' missing in colData(sce).")
+# is there clustering, counts, is.cell
+if (!"counts" %in% assayNames(sce)) stop("Assay 'counts' missing.")
+if (!(cluster_col %in% colnames(colData(sce)))) stop("SoupX requires pre-computed clustering!.")
+if (!"is.cell" %in% colnames(colData(sce))) stop("'is.cell' missing in colData(sce).")
 
-  # Manually construct SoupX channel
-  tod <- as(counts(sce), "dgCMatrix")
-  colnames(tod) <- sce@colData@listData[["Barcode"]]
-  toc <- tod[, sce$is.cell == T]
+## Manually construct SoupChannel object by providing table of counts and table of droplets
+tod <- as(counts(sce), "dgCMatrix")
+#colnames(tod) <- sce@colData@listData[["Barcode"]]
+colnames(tod) <- colData(sce)$Barcode
+#toc <- tod[, sce$is.cell == T]
+toc <- tod[, colData(sce)$is.cell == TRUE, drop = FALSE]
 
-  # Adding extra metadata to SoupChannel -> Cluster-vector only for cells, human and no doublets
-  clusters <- setNames(sce[, sce$is.cell == T]@colData@listData[["nn.clusters"]],
-                       sce[, sce$is.cell == T]@colData@listData[["Barcode"]])
+# Adding extra metadata to SoupChannel -> Cluster-vector only for cells, human and no doublets
+#clusters <- setNames(sce[, sce$is.cell == T]@colData@listData[["nn.clusters"]],
+                      #sce[, sce$is.cell == T]@colData@listData[["Barcode"]])
 
-  #SoupChannel
-  sc <- SoupX::SoupChannel(tod = tod, toc = toc)
-  #names(clusters) <- colnames(sc$toc)
-  sc <- SoupX::setClusters(sc, clusters)
+clusters <- setNames(
+  as.character(colData(sce)[colData(sce)$is.cell == TRUE, cluster_col]),
+  colData(sce)$Barcode[colData(sce)$is.cell == TRUE]
+)
+clusters <- clusters[colnames(toc)]
+
+# Create SoupChannel object
+sc <- SoupX::SoupChannel(tod = tod, toc = toc)
+#names(clusters) <- colnames(sc$toc)
+sc <- SoupX::setClusters(sc, clusters)
 
 
-   # estimate rho (contamination)
-  if(set_cont == "Auto"){
-    sc <- autoEstCont(sc)
-  } else {
-    sc <- setContaminationFraction(sc, contFrac = as.numeric(set_cont))
-  }
+# estimate rho (contamination)
+if(set_cont == "Auto"){
+  sc <- autoEstCont(sc)
+} else {
+  sc <- setContaminationFraction(sc, contFrac = as.numeric(set_cont))
+}
 
-  # correct counts, calculate corrected matrix
-  corrected_counts <- adjustCounts(sc)
+# correct counts, calculate corrected matrix
+corrected_counts <- adjustCounts(sc)
 
-  #Cell specific contamination, calculate for every cell how much soup was removed
-  perCell_cont <- data.frame(cell = colnames(corrected_counts),
-                             cont = 1-(Matrix::colSums(corrected_counts) / Matrix::colSums(sc$toc)))
+#Cell specific contamination, calculate for every cell how much soup was removed
+perCell_cont <- data.frame(cell = colnames(corrected_counts),
+                            cont = 1-(Matrix::colSums(corrected_counts) / Matrix::colSums(sc$toc)))
 
-  saveRDS(corrected_counts, cormat)
-  saveRDS(perCell_cont, perCell)
+saveRDS(corrected_counts, cormat)
+saveRDS(perCell_cont, perCell)
 }
 cat(sprintf(
   "[soupx_automated] Done for %s\n  - corrected: %s\n  - perCell:   %s\n",
@@ -66,6 +76,5 @@ cat(sprintf(
 ))
 
 run_SoupX(args$sce_path, args$cluster_col, args$set_cont, cormat, perCell)
-
 
 
