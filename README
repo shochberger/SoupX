@@ -1,0 +1,186 @@
+------------------------------------------------------------
+Outputs (both are produced and needed)
+------------------------------------------------------------
+
+We write two outputs—one for downstream analysis (cleaned counts) and one
+for QC/interpretation (per-cell contamination). In code, these exist as
+objects and are saved to files:
+
+1) Cleaned count matrix (essential)
+   - In memory:  `corrected_counts`  (dgCMatrix; genes × cells)
+   - On disk:    <name>.SoupX_automated_corrected_counts.rds  (== cormat)
+   - What it is: ambient-corrected counts returned by `adjustCounts(sc)`.
+   - Use it for: all downstream steps (normalization, HVGs, clustering, DE, …).
+
+2) Per-cell contamination table (recommended)
+   - In memory:  `perCell_cont`  (data.frame with columns: `cell`, `cont`)
+   - On disk:    <name>.SoupX_automated_per_cell_contamination.rds  (== perCell)
+   - What it is: fraction removed per cell,
+                 `cont = 1 - colSums(corrected_counts)/colSums(sc$toc)`.
+   - Use it for: QC, reporting, plotting, filtering out extreme cells if desired.
+
+Load back:
+  corrected <- readRDS("<...corrected_counts.rds>")
+  percell   <- readRDS("<...per_cell_contamination.rds>")
+
+Minimal sanity:
+  stopifnot(all(Matrix::colSums(corrected) <= Matrix::colSums(sc$toc)))
+  stopifnot(min(corrected@x) >= 0)
+
+Notes:
+  • The object names (`corrected_counts`, `perCell_cont`) and the file paths
+    (`cormat`, `perCell`) are separate on purpose: one is the data in memory,
+    the other is where it gets saved. Keep the file paths consistent with the
+    benchmark YAML so OB can pick them up.
+  • Typical median `cont` is a few percent; values depend on tissue and chemistry.
+
+------------------------------------------------------------
+---                                                      ---
+Omnibenchmark method module (SoupX – automated)
+---                                                      ---
+------------------------------------------------------------
+
+Removes ambient RNA from a SingleCellExperiment (SCE) using SoupX.
+Requires a *raw* counts assay (ALL droplets), cell flags, barcodes,
+and a cluster column for robust rho estimation.
+
+------------------------------------------------------------
+Inputs (CLI)
+------------------------------------------------------------
+  --output_dir  / -o   Output directory (created if missing)
+  --name        / -n   Dataset ID (prefix for outputs)
+  --data.sce           Path to SCE .rds (see requirements)
+  --cluster_col        colData column with cluster labels (e.g. nn.clusters)
+  --set_cont           'Auto' (recommended) or numeric fraction in [0,1]
+
+Example:
+  Rscript soupx_automated.R \
+    -o out/methods/SoupX_automated -n EB_all \
+    --data.sce out/data/EB_all/<params>/EB_all.sce.rds \
+    --cluster_col nn.clusters --set_cont Auto
+
+------------------------------------------------------------
+SCE requirements
+------------------------------------------------------------
+Assay:
+  • counts: dgCMatrix preferred, **ALL droplets** (cells + empty)
+colData:
+  • Barcode (unique; will become colnames of tod)
+  • is.cell (logical; TRUE = cell → defines toc)
+  • <cluster_col> (factor/char/int; ≥2 clusters)
+
+Quick check in R:
+  sce <- readRDS("…sce.rds")
+  stopifnot("counts" %in% assayNames(sce))
+  stopifnot(all(c("Barcode","is.cell") %in% colnames(colData(sce))))
+  stopifnot("<cluster_col>" %in% colnames(colData(sce)))
+  n_all   <- ncol(counts(sce))
+  n_cells <- sum(colData(sce)$is.cell)
+  message(sprintf("empty=%d", n_all - n_cells))  # should be > 0
+
+------------------------------------------------------------
+What the script does
+------------------------------------------------------------
+1) tod = counts for **all** droplets; colnames(tod) = Barcode
+2) toc = tod[, is.cell == TRUE]
+3) clusters = named vector (names = colnames(toc), values = labels)
+4) sc = SoupChannel(tod, toc) → setClusters(sc, clusters)
+5) rho via autoEstCont() (or fixed --set_cont), then adjustCounts()
+6) Write:
+   • <name>.SoupX_automated_corrected_counts.rds (genes × cells)
+   • <name>.SoupX_automated_per_cell_contamination.rds (cell, cont)
+
+------------------------------------------------------------
+QC (minimal)
+------------------------------------------------------------
+  • empty = ncol(tod) - ncol(toc)  > 0
+  • soup_counts_pos = sum(sc$soupProfile$counts > 0)  > 0
+  • rho ≈ reasonable (often 0.5–5% for 10x)
+  • all(colSums(corrected) <= colSums(sc$toc))  TRUE
+  • min(corrected@x) >= 0  TRUE
+
+------------------------------------------------------------
+Troubleshooting
+------------------------------------------------------------
+"No empty droplets ('tod' == 'toc')":
+  → SCE is cell-filtered. Provide raw counts incl. empty droplets.
+"Assay 'counts' missing":
+  → SCE must contain a counts assay.
+"Duplicated barcodes":
+  → Ensure colData(sce)$Barcode is unique.
+Rho NA/unstable:
+  → Check clusters exist/sensible; otherwise use --set_cont 0.02 temporarily.
+
+------------------------------------------------------------
+Repro tips
+------------------------------------------------------------
+  • Pin repo commit in YAML; log chosen cluster_col & SoupX version.
+  • Keep environment fixed (container).
+
+------------------------------------------------------------
+Where Omnibenchmark finds the outputs
+------------------------------------------------------------
+
+The module writes two files, and OB picks them up by path pattern:
+
+outputs:
+  - id: soupx.corrected
+    path: "{input}/{stage}/{module}/{params}/{dataset}.SoupX_automated_corrected_counts.rds"
+  - id: soupx.percell
+    path: "{input}/{stage}/{module}/{params}/{dataset}.SoupX_automated_per_cell_contamination.rds"
+
+Mapping from the script to OB:
+  • {dataset}  ==  --name (args$name)
+  • {input}/{stage}/{module}/{params}  ==  --output_dir (args$output_dir)
+  • corrected_counts is saved to:
+      {output_dir}/{name}.SoupX_automated_corrected_counts.rds
+  • perCell_cont is saved to:
+      {output_dir}/{name}.SoupX_automated_per_cell_contamination.rds
+
+Keep the filenames EXACT (including the suffixes), or OB won’t match them.
+
+
+------------------------------------------------------------
+Clustering (highly recommended by SoupX)
+------------------------------------------------------------
+
+Why clusters matter
+  • SoupX’s autoEstCont() uses cluster structure to infer gene non-expressors,
+    which stabilizes the global contamination estimate (ρ) and makes
+    adjustCounts() more precise.
+  • Without clusters, SoupX can still run, but automatic ρ estimation becomes
+    weak; you’d have to use a fixed --set_cont value (manual mode), which is
+    less data-driven.
+
+What this module expects
+  • A clustering column in colData(sce) named EXACTLY: nn.clusters
+    (note the dot, not a dash).
+  • The script will stop if nn.clusters is missing. If you want to use another
+    column, either create/rename it to nn.clusters in your SCE or adapt the
+    script accordingly.
+
+How clusters are used internally
+  • We build a named vector: values = cluster labels, names = cell barcodes
+    (must match colnames of toc). Then: sc <- setClusters(sc, clusters).
+  • Counts are split into:
+      - tod = ALL droplets (cells + empty)
+      - toc = cells only (is.cell == TRUE)
+    Clusters are aligned to toc (cells).
+
+Fallback (manual contamination)
+  • If you intentionally skip clustering, you can run with a fixed fraction:
+      --set_cont 0.02   # e.g., 2%
+    Note: this is less robust than auto estimation with clusters.
+
+Where OB finds the outputs
+  outputs:
+    - id: soupx.corrected
+      path: "{input}/{stage}/{module}/{params}/{dataset}.SoupX_automated_corrected_counts.rds"
+    - id: soupx.percell
+      path: "{input}/{stage}/{module}/{params}/{dataset}.SoupX_automated_per_cell_contamination.rds"
+
+
+
+
+
+
