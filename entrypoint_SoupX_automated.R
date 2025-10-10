@@ -32,20 +32,12 @@ if (!"is.cell" %in% colnames(colData(sce))) stop("'is.cell' missing in colData(s
 
 ## Manually construct SoupChannel object by providing table of counts and table of droplets
 tod <- as(counts(sce), "dgCMatrix")
-#colnames(tod) <- sce@colData@listData[["Barcode"]]
-colnames(tod) <- colData(sce)$Barcode
-#toc <- tod[, sce$is.cell == T]
-toc <- tod[, colData(sce)$is.cell == TRUE, drop = FALSE]
+colnames(tod) <- sce@colData@listData[["Barcode"]]
+toc <- tod[, sce$is.cell == T]
 
 # Adding extra metadata to SoupChannel -> Cluster-vector only for cells, human and no doublets
-#clusters <- setNames(sce[, sce$is.cell == T]@colData@listData[["nn.clusters"]],
-                      #sce[, sce$is.cell == T]@colData@listData[["Barcode"]])
-
-clusters <- setNames(
-  as.character(colData(sce)[colData(sce)$is.cell == TRUE, cluster_col]),
-  colData(sce)$Barcode[colData(sce)$is.cell == TRUE]
-)
-clusters <- clusters[colnames(toc)]
+clusters <- setNames(sce[, sce$is.cell == T]@colData@listData[["nn.clusters"]],
+                      sce[, sce$is.cell == T]@colData@listData[["Barcode"]])
 
 # Create SoupChannel object
 sc <- SoupX::SoupChannel(tod = tod, toc = toc)
