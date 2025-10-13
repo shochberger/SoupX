@@ -1,9 +1,9 @@
 #!/usr/bin/env Rscript
 
-# Omnibenchmark entrypoint for SoupX: loads an SCE (.sce.rds), builds a SoupChannel
-# (tod=all droplets, toc=only cells via is.cell), uses colData$nn.clusters, estimates
-# rho via Auto or applies a fixed --set_cont, runs adjustCounts(), and writes
-# {name}.soupX_corrected.rds + {name}.soupX_percell.rds to --output_dir.
+#!/usr/bin/env Rscript
+# Runs SoupX on an SCE: builds SoupChannel (tod=all droplets, toc=cells via is.cell),
+# uses colData$nn.clusters, estimates/sets contamination (--set_cont), adjusts counts.
+# Outputs: {name}.corrected.rds, {name}.percell.rds (cell,cont), {name}.method.json (method+params).
 
 library(argparse)
 library(SoupX)
