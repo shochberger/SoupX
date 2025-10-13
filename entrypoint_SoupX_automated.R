@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-# Omnibenchmark wrapper for SoupX: loads an SCE (.sce.rds), builds a SoupChannel
+# Omnibenchmark entrypoint for SoupX: loads an SCE (.sce.rds), builds a SoupChannel
 # (tod=all droplets, toc=only cells via is.cell), uses colData$nn.clusters, estimates
 # rho via Auto or applies a fixed --set_cont, runs adjustCounts(), and writes
 # {name}.soupX_corrected.rds + {name}.soupX_percell.rds to --output_dir.
@@ -10,6 +10,7 @@ library(SoupX)
 library(SingleCellExperiment)
 library(Matrix)
 library(tibble)
+library(jsonlite)
 
 parser <- ArgumentParser(description = "Run SoupX automated on a SingleCellExperiment")
 parser$add_argument("--output_dir", "-o", required = TRUE, help = "Output directory by OB")
@@ -19,12 +20,14 @@ parser$add_argument("--set_cont", default = "Auto", help = "Contamination settin
 args <- parser$parse_args()
 
 dir.create(args$output_dir, recursive = TRUE, showWarnings = FALSE)
-cormat <- file.path(args$output_dir, paste0(args$name, ".soupX_corrected.rds"))
-perCell <- file.path(args$output_dir, paste0(args$name, ".soupX_percell.rds"))
+out_cormat <- file.path(args$output_dir, paste0(args$name, ".corrected.rds"))
+out_perCell <- file.path(args$output_dir, paste0(args$name, ".percell.rds"))
+out_meta <- file.path(args$output_dir, paste0(args$name, ".method.json"))
 
-run_SoupX <- function(sce_path, set_cont, cormat, perCell){
-  # read input (SCE object)
-  sce <- readRDS(sce_path)
+run_SoupX <- function(sce_path, set_cont, out_cormat, out_perCell, out_meta){
+
+# read input (SCE object)
+sce <- readRDS(sce_path)
 
 # sanity checks (fails fast if required )
 if (!"counts" %in% assayNames(sce)) stop("Assay 'counts' missing.")
@@ -61,14 +64,28 @@ perCell_cont <- data.frame(cell = colnames(corrected_counts),
                             cont = 1-(Matrix::colSums(corrected_counts) / Matrix::colSums(sc$toc)))
 
 # Write outputs (OB will collect via configured paths)
-saveRDS(corrected_counts, cormat)
-saveRDS(perCell_cont, perCell)
+saveRDS(corrected_counts, out_cormat)
+saveRDS(perCell_cont, out_perCell)
 }
+
+# Sidecar meta (method + params)
+jsonlite::write_json(
+  list(
+    dataset = args$name,
+    stage   = "methods",
+    module  = "SoupX_automated",
+    method  = "SoupX_automated",
+    params  = list(set_cont = args$set_cont)
+  ),
+  path = out_meta,
+  auto_unbox = TRUE
+)
+
+
+run_SoupX(args$sce_path, args$set_cont, out_cormat, out_perCell, out_meta)
+
 cat(sprintf(
   "[soupx_automated] Done for %s\n  - corrected: %s\n  - perCell:   %s\n",
-  args$name, cormat, perCell
+  args$name, out_cormat, out_perCell
 ))
-
-run_SoupX(args$sce_path, args$set_cont, cormat, perCell)
-
 
